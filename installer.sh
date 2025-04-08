@@ -8,6 +8,8 @@ set -e  # Exit immediately if a command exits with a non-zero status
 echo "📂 Tree Clone Installer"
 echo "=========================="
 
+VERSION="0.14.0"
+
 # Function to download and install Zig if not found
 install_zig() {
     echo "🔍 Zig not found. Installing from official binary..."
@@ -22,15 +24,15 @@ install_zig() {
     # Set appropriate URL based on architecture
     if [[ "$ARCH" == "x86_64" ]]; then
         if [[ "$OS" == "darwin" ]]; then
-            ZIG_URL="https://ziglang.org/download/0.14.0/zig-macos-x86_64-0.14.0.tar.xz"
+            ZIG_URL="https://ziglang.org/download/${VERSION}/zig-macos-x86_64-${VERSION}.tar.xz"
         elif [[ "$OS" == "linux" ]]; then
-            ZIG_URL="https://ziglang.org/download/0.14.0/zig-linux-x86_64-0.14.0.tar.xz"
+            ZIG_URL="https://ziglang.org/download/${VERSION}/zig-linux-x86_64-${VERSION}.tar.xz"
         fi
     elif [[ "$ARCH" == "arm64" || "$ARCH" == "aarch64" ]]; then
         if [[ "$OS" == "darwin" ]]; then
-            ZIG_URL="https://ziglang.org/download/0.14.0/zig-macos-aarch64-0.14.0.tar.xz"
+            ZIG_URL="https://ziglang.org/download/${VERSION}/zig-macos-aarch64-${VERSION}.tar.xz"
         elif [[ "$OS" == "linux" ]]; then
-            ZIG_URL="https://ziglang.org/download/0.14.0/zig-linux-aarch64-0.14.0.tar.xz"
+            ZIG_URL="https://ziglang.org/download/${VERSION}/zig-linux-aarch64-${VERSION}.tar.xz"
         fi
     fi
     
@@ -51,18 +53,15 @@ install_zig() {
     fi
     
     # Extract Zig
-    echo "📦 Extracting Zig..."
-    tar -xf "$ZIG_TEMP/zig.tar.xz" -C "$ZIG_TEMP"
-    
-    # Find the extracted directory
-    ZIG_DIR=$(find "$ZIG_TEMP" -maxdepth 1 -type d -name "zig-*" | head -n 1)
-    
-    # Create ~/.local/bin if it doesn't exist
-    mkdir -p "$HOME/.local/bin"
+    ZIG_DIR="${HOME}/.zig-${VERSION}"
+    mkdir -p "${ZIG_DIR}"
+    echo "📦 Extracting Zig to ${ZIG_DIR}"
+    tar -xf "$ZIG_TEMP/zig.tar.xz" -C "$ZIG_DIR"
     
     # Copy Zig binary to ~/.local/bin
     echo "📦 Installing Zig to ~/.local/bin/"
-    cp "$ZIG_DIR/zig" "$HOME/.local/bin/"
+    mkdir -p "$HOME/.local/bin/"
+    ln -s "${ZIG_DIR}/zig" "${HOME}/.local/bin/"
     
     # Add ~/.local/bin to PATH if not already there
     if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
@@ -87,63 +86,66 @@ install_zig() {
     fi
 }
 
-# Check if Zig is installed
-if ! command -v zig &> /dev/null; then
-    install_zig
-else
-    echo "✅ Zig is already installed"
-fi
+build_tree() {
+    # Check if Zig is installed
+    if ! command -v zig &> /dev/null; then
+        install_zig
+    else
+        echo "✅ Zig is already installed"
+    fi
 
-# Ensure ~/.local/bin exists
-mkdir -p "$HOME/.local/bin"
+    # Ensure ~/.local/bin exists
+    mkdir -p "$HOME/.local/bin"
 
-# Create a temporary directory for building
-TEMP_DIR=$(mktemp -d)
-echo "📁 Created temporary directory: $TEMP_DIR"
+    # Create a temporary directory for building
+    TEMP_DIR=$(mktemp -d)
+    echo "📁 Created temporary directory: $TEMP_DIR"
 
-# Check if the current script directory contains tree.zig
-SOURCE_FILE=""
-if [ -f "./tree.zig" ]; then
-    SOURCE_FILE="./tree.zig"
-    echo "✅ Found tree.zig in current directory"
-else
-    # If tree.zig is not in the current directory, download it
-    echo "🔍 tree.zig not found in current directory, downloading..."
-    
-    # URL to the raw file (adjust accordingly to your repository)
-    SOURCE_URL="https://raw.githubusercontent.com/yourusername/zig-tree/main/tree.zig"
-    
-    # Download tree.zig to the temporary directory
-    if ! curl -s "$SOURCE_URL" -o "$TEMP_DIR/tree.zig"; then
-        echo "❌ Failed to download tree.zig. Please check your internet connection."
-        echo "   Or manually place tree.zig in the current directory and run this script again."
+    # Check if the current script directory contains tree.zig
+    SOURCE_FILE=""
+    if [ -f "./tree.zig" ]; then
+        SOURCE_FILE="./tree.zig"
+        echo "✅ Found tree.zig in current directory"
+    else
+        # If tree.zig is not in the current directory, download it
+        echo "🔍 tree.zig not found in current directory, downloading..."
+        
+        # URL to the raw file (adjust accordingly to your repository)
+        SOURCE_URL="https://raw.githubusercontent.com/yourusername/zig-tree/main/tree.zig"
+        
+        # Download tree.zig to the temporary directory
+        if ! curl -s "$SOURCE_URL" -o "$TEMP_DIR/tree.zig"; then
+            echo "❌ Failed to download tree.zig. Please check your internet connection."
+            echo "   Or manually place tree.zig in the current directory and run this script again."
+            rm -rf "$TEMP_DIR"
+            exit 1
+        fi
+        
+        SOURCE_FILE="$TEMP_DIR/tree.zig"
+        echo "✅ Downloaded tree.zig"
+    fi
+
+    # Build the executable
+    echo "🔨 Building tree..."
+    (cd "$TEMP_DIR" && zig build-exe "$SOURCE_FILE" -O ReleaseFast)
+
+    # Get the build output file
+    if [ -f "$TEMP_DIR/tree" ]; then
+        BUILD_OUTPUT="$TEMP_DIR/tree"
+    elif [ -f "$TEMP_DIR/tree.exe" ]; then
+        BUILD_OUTPUT="$TEMP_DIR/tree.exe"
+    else
+        echo "❌ Could not find the compiled binary."
         rm -rf "$TEMP_DIR"
         exit 1
     fi
-    
-    SOURCE_FILE="$TEMP_DIR/tree.zig"
-    echo "✅ Downloaded tree.zig"
-fi
 
-# Build the executable
-echo "🔨 Building tree..."
-(cd "$TEMP_DIR" && zig build-exe "$SOURCE_FILE" -O ReleaseFast)
+    echo "✅ Build successful"
+}
 
-# Get the build output file
-if [ -f "$TEMP_DIR/tree" ]; then
-    BUILD_OUTPUT="$TEMP_DIR/tree"
-elif [ -f "$TEMP_DIR/tree.exe" ]; then
-    BUILD_OUTPUT="$TEMP_DIR/tree.exe"
-else
-    echo "❌ Could not find the compiled binary."
-    rm -rf "$TEMP_DIR"
-    exit 1
-fi
-
-echo "✅ Build successful"
 
 # Install to ~/.local/bin
-INSTALL_DIR="$HOME/.local/bin"
+INSTALL_DIR="$HOME/.zig-${VERSION}"
 echo "📦 Installing to $INSTALL_DIR/tree..."
 
 # Ensure ~/.local/bin exists

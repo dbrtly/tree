@@ -161,3 +161,206 @@ pub fn main() !void {
     // Start tree traversal
     try printTree(allocator, abs_path, "", options, 0);
 }
+
+test "FileEntry creation and properties" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    // Create a temporary directory for testing
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Get path to the temporary directory
+    const path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(path);
+
+    // Create a regular file
+    {
+        var file = try tmp_dir.dir.createFile("regular_file.txt", .{});
+        file.close();
+    }
+
+    // Create a directory
+    try tmp_dir.dir.makeDir("test_dir");
+
+    // Create a hidden file
+    {
+        var file = try tmp_dir.dir.createFile(".hidden_file", .{});
+        file.close();
+    }
+
+    // Test regular file
+    {
+        var entry = try FileEntry.create(allocator, path, "regular_file.txt");
+        defer entry.deinit(allocator);
+
+        try testing.expect(!entry.is_dir);
+        try testing.expect(!entry.is_hidden);
+        try testing.expectEqualStrings("regular_file.txt", entry.name);
+    }
+
+    // Test directory
+    {
+        var entry = try FileEntry.create(allocator, path, "test_dir");
+        defer entry.deinit(allocator);
+
+        try testing.expect(entry.is_dir);
+        try testing.expect(!entry.is_hidden);
+        try testing.expectEqualStrings("test_dir", entry.name);
+    }
+
+    // Test hidden file
+    {
+        var entry = try FileEntry.create(allocator, path, ".hidden_file");
+        defer entry.deinit(allocator);
+
+        try testing.expect(!entry.is_dir);
+        try testing.expect(entry.is_hidden);
+        try testing.expectEqualStrings(".hidden_file", entry.name);
+    }
+}
+
+test "compareFileEntries sorting logic" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    // Create test entries
+    var entries = [_]FileEntry{
+        // Regular files
+        FileEntry{
+            .name = try allocator.dupe(u8, "file.txt"),
+            .path = try allocator.dupe(u8, "/path/file.txt"),
+            .is_dir = false,
+            .is_hidden = false,
+        },
+        // Uppercase files (should come before lowercase)
+        FileEntry{
+            .name = try allocator.dupe(u8, "Uppercase.txt"),
+            .path = try allocator.dupe(u8, "/path/Uppercase.txt"),
+            .is_dir = false,
+            .is_hidden = false,
+        },
+        // Directories (should come before files)
+        FileEntry{
+            .name = try allocator.dupe(u8, "directory"),
+            .path = try allocator.dupe(u8, "/path/directory"),
+            .is_dir = true,
+            .is_hidden = false,
+        },
+        // Hidden files (should come first)
+        FileEntry{
+            .name = try allocator.dupe(u8, ".hidden"),
+            .path = try allocator.dupe(u8, "/path/.hidden"),
+            .is_dir = false,
+            .is_hidden = true,
+        },
+        // Hidden directory (should come before hidden files)
+        FileEntry{
+            .name = try allocator.dupe(u8, ".hidden_dir"),
+            .path = try allocator.dupe(u8, "/path/.hidden_dir"),
+            .is_dir = true,
+            .is_hidden = true,
+        },
+        // Uppercase directory (should come before lowercase directories)
+        FileEntry{
+            .name = try allocator.dupe(u8, "Upper_dir"),
+            .path = try allocator.dupe(u8, "/path/Upper_dir"),
+            .is_dir = true,
+            .is_hidden = false,
+        },
+    };
+
+    // Clean up all the allocated memory
+    defer for (&entries) |*entry| {
+        allocator.free(entry.name);
+        allocator.free(entry.path);
+    };
+
+    // Sort the entries
+    std.sort.insertion(FileEntry, &entries, {}, compareFileEntries);
+
+    // Check that hidden entries come first
+    try testing.expect(entries[0].is_hidden);
+    try testing.expect(entries[1].is_hidden);
+
+    // Check that hidden directories come before hidden files
+    try testing.expect(entries[0].is_dir);
+    try testing.expect(!entries[1].is_dir);
+
+    // Check that non-hidden directories come next
+    try testing.expect(entries[2].is_dir);
+    try testing.expect(entries[3].is_dir);
+
+    // Check that uppercase directories come before lowercase directories
+    try testing.expectEqualStrings("Upper_dir", entries[2].name);
+    try testing.expectEqualStrings("directory", entries[3].name);
+
+    // Check that uppercase files come before lowercase files
+    try testing.expectEqualStrings("Uppercase.txt", entries[4].name);
+    try testing.expectEqualStrings("file.txt", entries[5].name);
+}
+
+test "TreeOptions default values" {
+    const testing = std.testing;
+
+    // Create default options
+    const options = TreeOptions{};
+
+    // Check default values
+    try testing.expect(!options.show_hidden);
+    try testing.expect(options.max_depth == null);
+}
+
+test "Directory traversal with printTree" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    // Create a test directory structure
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Get path to the temporary directory
+    const path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(path);
+
+    // Create a simple directory structure
+    try tmp_dir.dir.makeDir("dir1");
+    try tmp_dir.dir.makeDir("dir2");
+    {
+        var file = try tmp_dir.dir.createFile("file1.txt", .{});
+        file.close();
+    }
+    {
+        var file = try tmp_dir.dir.createFile(".hidden", .{});
+        file.close();
+    }
+
+    var sub_dir = try tmp_dir.dir.openDir("dir1", .{});
+    {
+        var file = try sub_dir.createFile("subfile.txt", .{});
+        file.close();
+    }
+    sub_dir.close();
+
+    // This test is tricky because printTree prints to stdout
+    // We're going to do a minimal test to ensure it doesn't crash
+    // A more thorough test would redirect stdout and verify output
+    const options = TreeOptions{};
+    try printTree(allocator, path, "", options, 0);
+
+    // Test with show_hidden = true
+    const options_hidden = TreeOptions{ .show_hidden = true };
+    try printTree(allocator, path, "", options_hidden, 0);
+
+    // Test with max_depth = 0 (should only show the root)
+    const options_depth = TreeOptions{ .max_depth = 0 };
+    try printTree(allocator, path, "", options_depth, 0);
+}
+
+// Test to run the entire program with mock arguments
+test "main function argument parsing" {
+    // To properly test main, you would need to mock process.args
+    // This is a more advanced test that might require modifications
+    // to your code to make it testable
+    // For now, we'll just note that this would be valuable to test
+}

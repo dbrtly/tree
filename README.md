@@ -19,18 +19,21 @@ Why install tree from homebrew when you can rewrite it from scratch?
 
 ### Requirements
 
-- Zig compiler (0.10.0 or later recommended)
+- Zig compiler (0.14.0 or later recommended)
 - macOS operating system
 
 ### Building from Source
 
 ```bash
 # Clone the repository
-git clone https://github.com/dbrtly/zig-tree.git
-cd zig-tree
+git clone https://github.com/dbrtly/tree.git
+cd tree
 
 # Build the executable
 zig build-exe tree.zig
+
+# test the code
+zig test tree.zig
 
 # Optional: Move to a directory in your PATH
 cp tree /usr/local/bin/
@@ -54,6 +57,7 @@ Basic usage:
 |--------|-----------------|--------------------------------------------|
 | `-a`   | `--all`         | Show hidden files (starting with `.`)      |
 | `-L n` | `--max-depth n` | Limit directory recursion to n levels deep |
+| 
 
 ## Examples
 
@@ -74,18 +78,30 @@ Combine options:
 
 ## Output Example
 
+```bash
+tree
+├── README.md
+├── installer.sh
+├── tree
+├── tree.o
+└── tree.zig
 ```
-Documents
-├── Projects
-│   ├── ProjectA
-│   │   ├── README.md
-│   │   └── src
-│   └── ProjectB
-├── Images
-│   ├── vacation.jpg
-│   └── work.png
-└── notes.txt
+
+```bash
+$ tree --all
+
+tree
+├── .zig-cache
+│   └── tmp
+├── .gitattributes
+├── .gitignore
+├── README.md
+├── installer.sh
+├── tree
+├── tree.o
+└── tree.zig
 ```
+
 
 ## Differences from Standard Tree
 
