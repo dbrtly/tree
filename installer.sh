@@ -86,104 +86,46 @@ install_zig() {
     fi
 }
 
-build_tree() {
-    # Check if Zig is installed
-    if ! command -v zig &> /dev/null; then
-        install_zig
-    else
-        echo "✅ Zig is already installed"
-    fi
-
+install_dir() {
     # Ensure ~/.local/bin exists
-    mkdir -p "$HOME/.local/bin"
+    mkdir -p "$INSTALL_DIR"
 
-    # Create a temporary directory for building
-    TEMP_DIR=$(mktemp -d)
-    echo "📁 Created temporary directory: $TEMP_DIR"
-
-    # Check if the current script directory contains tree.zig
-    SOURCE_FILE=""
-    if [ -f "./tree.zig" ]; then
-        SOURCE_FILE="./tree.zig"
-        echo "✅ Found tree.zig in current directory"
-    else
-        # If tree.zig is not in the current directory, download it
-        echo "🔍 tree.zig not found in current directory, downloading..."
+    # Ensure installation directory is in PATH
+    if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
+        echo "⚠️ Warning: $INSTALL_DIR is not in your PATH."
+        echo "   Adding it to your PATH configuration files..."
         
-        # URL to the raw file (adjust accordingly to your repository)
-        SOURCE_URL="https://raw.githubusercontent.com/yourusername/zig-tree/main/tree.zig"
+        # Add to common shell configuration files
+        echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
+        echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.profile"
         
-        # Download tree.zig to the temporary directory
-        if ! curl -s "$SOURCE_URL" -o "$TEMP_DIR/tree.zig"; then
-            echo "❌ Failed to download tree.zig. Please check your internet connection."
-            echo "   Or manually place tree.zig in the current directory and run this script again."
-            rm -rf "$TEMP_DIR"
-            exit 1
+        # Add to zsh config if it exists
+        if [[ -f "$HOME/.zshrc" ]]; then
+            echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.zshrc"
         fi
         
-        SOURCE_FILE="$TEMP_DIR/tree.zig"
-        echo "✅ Downloaded tree.zig"
+        echo "   Please restart your terminal or run: export PATH=\"$HOME/.local/bin:\$PATH\""
     fi
-
-    # Build the executable
-    echo "🔨 Building tree..."
-    (cd "$TEMP_DIR" && zig build-exe "$SOURCE_FILE" -O ReleaseFast)
-
-    # Get the build output file
-    if [ -f "$TEMP_DIR/tree" ]; then
-        BUILD_OUTPUT="$TEMP_DIR/tree"
-    elif [ -f "$TEMP_DIR/tree.exe" ]; then
-        BUILD_OUTPUT="$TEMP_DIR/tree.exe"
-    else
-        echo "❌ Could not find the compiled binary."
-        rm -rf "$TEMP_DIR"
-        exit 1
-    fi
-
-    echo "✅ Build successful"
 }
 
+# Check if Zig is installed
+if ! command -v zig &> /dev/null; then
+    install_zig
+else
+    echo "✅ Zig is already installed"
+fi
+
+zig build
 
 # Install to ~/.local/bin
 INSTALL_DIR="$HOME/.zig-${VERSION}"
 echo "📦 Installing to $INSTALL_DIR/tree..."
 
-# Ensure ~/.local/bin exists
-mkdir -p "$INSTALL_DIR"
+install_dir
 
 # Copy the executable to the installation directory
+BUILD_OUTPUT="${PWD}/zig-out/bin/tree"
 cp "$BUILD_OUTPUT" "$INSTALL_DIR/tree"
 chmod +x "$INSTALL_DIR/tree"
 
 echo "✅ Installation complete"
-
-# Clean up
-rm -rf "$TEMP_DIR"
-echo "🧹 Cleaned up temporary files"
-
-# Check if installation directory is in PATH
-if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
-    echo "⚠️ Warning: $INSTALL_DIR is not in your PATH."
-    echo "   Adding it to your PATH configuration files..."
-    
-    # Add to common shell configuration files
-    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
-    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.profile"
-    
-    # Add to zsh config if it exists
-    if [[ -f "$HOME/.zshrc" ]]; then
-        echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.zshrc"
-    fi
-    
-    echo "   Please restart your terminal or run: export PATH=\"$HOME/.local/bin:\$PATH\""
-fi
-
-echo ""
-echo "🎉 Zig Tree Clone has been successfully installed!"
-echo "   You can now run it by typing 'tree' in your terminal."
-echo ""
-echo "📚 Usage examples:"
-echo "   tree                  # List files in current directory"
-echo "   tree -a               # Show hidden files"
-echo "   tree -L 2             # Limit depth to 2 levels"
-echo "   tree /path/to/dir     # List files in specified directory"

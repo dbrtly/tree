@@ -19,8 +19,7 @@ Why install tree from homebrew when you can rewrite it from scratch?
 
 ### Requirements
 
-- Zig compiler (0.14.0 or later recommended)
-- macOS operating system
+- Zig language (0.14.0 or later recommended)
 
 ### Building from Source
 
@@ -30,7 +29,7 @@ git clone https://github.com/dbrtly/tree.git
 cd tree
 
 # Build the executable
-zig build-exe tree.zig
+zig build
 
 # test the code
 zig test tree.zig
