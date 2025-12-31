@@ -38,32 +38,82 @@ const TreeOptions = struct {
     max_depth: ?usize = null,
 };
 
+fn isUpper(name: []const u8) bool {
+    if (name.len == 0) return false;
+    const c = name[0];
+    return c >= 'A' and c <= 'Z';
+}
+
 fn compareFileEntries(context: void, a: FileEntry, b: FileEntry) bool {
     _ = context;
 
-    // Hidden files first (if they're shown)
     if (a.is_hidden != b.is_hidden) {
-        return a.is_hidden;
+        return a.is_hidden; // hidden comes first
     }
-
-    // Directories first
     if (a.is_dir != b.is_dir) {
-        return a.is_dir;
+        return a.is_dir; // directories come first
     }
-
-    // Check for uppercase - uppercase comes first
-    const a_first_char = if (a.name.len > 0) a.name[0] else 0;
-    const b_first_char = if (b.name.len > 0) b.name[0] else 0;
-
-    const a_is_upper = a_first_char >= 'A' and a_first_char <= 'Z';
-    const b_is_upper = b_first_char >= 'A' and b_first_char <= 'Z';
-
+    const a_is_upper = isUpper(a.name);
+    const b_is_upper = isUpper(b.name);
     if (a_is_upper != b_is_upper) {
-        return a_is_upper;
+        return a_is_upper; // uppercase comes first
     }
 
-    // Finally, natural sort (alphanumeric)
     return std.ascii.lessThanIgnoreCase(a.name, b.name);
+}
+
+fn getSortedEntries(allocator: Allocator, path: []const u8, options: TreeOptions) !std.ArrayList(FileEntry) {
+    var dir = try fs.openDirAbsolute(path, .{ .iterate = true });
+    defer dir.close();
+
+    var entries = std.ArrayList(FileEntry){};
+    var iter = dir.iterate();
+    while (try iter.next()) |entry| {
+        if (!options.show_hidden and entry.name[0] == '.') {
+            continue;
+        }
+        const file_entry = try FileEntry.create(allocator, path, entry.name);
+        try entries.append(allocator, file_entry);
+    }
+
+    std.sort.insertion(FileEntry, entries.items, {}, compareFileEntries);
+    return entries;
+}
+
+fn printTreeRecursive(
+    allocator: Allocator,
+    entries: []const FileEntry,
+    prefix: []const u8,
+    options: TreeOptions,
+    depth: usize,
+    writer: anytype,
+) !void {
+    if (options.max_depth) |max_depth| {
+        if (depth > max_depth) return;
+    }
+
+    for (entries, 0..) |entry, i| {
+        const is_last = i == entries.len - 1;
+        const branch = if (is_last) "└── " else "├── ";
+        const next_prefix = if (is_last) "    " else "│   ";
+
+        try writer.print("{s}{s}{s}\n", .{ prefix, branch, entry.name });
+
+        if (entry.is_dir) {
+            const new_prefix = try std.fmt.allocPrint(allocator, "{s}{s}", .{ prefix, next_prefix });
+            defer allocator.free(new_prefix);
+
+            var sub_entries = try getSortedEntries(allocator, entry.path, options);
+            defer {
+                for (sub_entries.items) |*sub_entry| {
+                    sub_entry.deinit(allocator);
+                }
+                sub_entries.deinit(allocator);
+            }
+
+            try printTreeRecursive(allocator, sub_entries.items, new_prefix, options, depth + 1, writer);
+        }
+    }
 }
 
 fn printTree(
@@ -72,52 +122,16 @@ fn printTree(
     prefix: []const u8,
     options: TreeOptions,
     depth: usize,
+    writer: anytype,
 ) !void {
-    // Check max depth
-    if (options.max_depth) |max_depth| {
-        if (depth > max_depth) return;
-    }
-
-    var dir = try fs.openDirAbsolute(path, .{ .iterate = true });
-    defer dir.close();
-
-    var entries = std.ArrayList(FileEntry).init(allocator);
+    var entries = try getSortedEntries(allocator, path, options);
     defer {
         for (entries.items) |*entry| {
             entry.deinit(allocator);
         }
-        entries.deinit();
+        entries.deinit(allocator);
     }
-
-    var iter = dir.iterate();
-    while (try iter.next()) |entry| {
-        // Skip hidden files if not showing hidden
-        if (!options.show_hidden and entry.name[0] == '.') {
-            continue;
-        }
-
-        const file_entry = try FileEntry.create(allocator, path, entry.name);
-        try entries.append(file_entry);
-    }
-
-    // Sort entries according to our custom logic
-    std.sort.insertion(FileEntry, entries.items, {}, compareFileEntries);
-
-    for (entries.items, 0..) |entry, i| {
-        const is_last = i == entries.items.len - 1;
-        const branch = if (is_last) "└── " else "├── ";
-        const next_prefix = if (is_last) "    " else "│   ";
-
-        // Print current entry
-        std.debug.print("{s}{s}{s}\n", .{ prefix, branch, entry.name });
-
-        // Recursively process directories
-        if (entry.is_dir) {
-            const new_prefix = try std.fmt.allocPrint(allocator, "{s}{s}", .{ prefix, next_prefix });
-            defer allocator.free(new_prefix);
-            try printTree(allocator, entry.path, new_prefix, options, depth + 1);
-        }
-    }
+    try printTreeRecursive(allocator, entries.items, prefix, options, depth, writer);
 }
 
 pub fn main() !void {
@@ -131,7 +145,7 @@ pub fn main() !void {
     var options = TreeOptions{};
     var target_path: []const u8 = "."; // Default to current directory
 
-    // Simple argument parsing
+    // argument parsing
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
@@ -158,8 +172,13 @@ pub fn main() !void {
     const dirname = std.fs.path.basename(abs_path);
     std.debug.print("{s}\n", .{dirname});
 
-    // Start tree traversal
-    try printTree(allocator, abs_path, "", options, 0);
+    // Create writer
+    var buffer: [1024]u8 = undefined;
+    var stdout_file_writer = std.fs.File.stdout().writer(&buffer);
+    const buffered_stdout = &stdout_file_writer.interface;
+
+    try printTree(allocator, abs_path, "", options, 0, buffered_stdout);
+    try buffered_stdout.flush();
 }
 
 test "FileEntry creation and properties" {
@@ -346,15 +365,21 @@ test "Directory traversal with printTree" {
     // We're going to do a minimal test to ensure it doesn't crash
     // A more thorough test would redirect stdout and verify output
     const options = TreeOptions{};
-    try printTree(allocator, path, "", options, 0);
+    var list = std.ArrayList(u8){};
+    defer list.deinit(allocator);
+    const writer = list.writer(allocator);
+
+    try printTree(allocator, path, "", options, 0, writer);
 
     // Test with show_hidden = true
+    list.clearRetainingCapacity();
     const options_hidden = TreeOptions{ .show_hidden = true };
-    try printTree(allocator, path, "", options_hidden, 0);
+    try printTree(allocator, path, "", options_hidden, 0, writer);
 
     // Test with max_depth = 0 (should only show the root)
+    list.clearRetainingCapacity();
     const options_depth = TreeOptions{ .max_depth = 0 };
-    try printTree(allocator, path, "", options_depth, 0);
+    try printTree(allocator, path, "", options_depth, 0, writer);
 }
 
 // Test to run the entire program with mock arguments
