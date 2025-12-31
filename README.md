@@ -8,10 +8,10 @@ Why install tree from homebrew when you can rewrite it from scratch?
 
 - Display directory structures in a tree-like format
 - Custom sorting logic:
-  - Hidden files first (when enabled)
-  - Uppercase files/directories first
-  - Directories before files
-  - Alphanumeric sorting
+    - Hidden files first (when enabled)
+    - Uppercase files/directories first
+    - Directories before files
+    - Alphanumeric sorting
 - Command-line flags to customize behavior
 - Memory-safe implementation using Zig
 
@@ -19,7 +19,7 @@ Why install tree from homebrew when you can rewrite it from scratch?
 
 ### Requirements
 
-- Zig language (0.14.0 or later recommended)
+- Zig language (0.15.2 or later recommended)
 
 ### Building from Source
 
@@ -53,24 +53,28 @@ Basic usage:
 ### Command Line Options
 
 | Flag   | Long Form       | Description                                |
-|--------|-----------------|--------------------------------------------|
+| ------ | --------------- | ------------------------------------------ |
 | `-a`   | `--all`         | Show hidden files (starting with `.`)      |
 | `-L n` | `--max-depth n` | Limit directory recursion to n levels deep |
-| 
+
+|
 
 ## Examples
 
 Show all files including hidden ones:
+
 ```bash
 ./tree -a
 ```
 
 Limit directory depth to 2 levels:
+
 ```bash
 ./tree -L 2
 ```
 
 Combine options:
+
 ```bash
 ./tree -a -L 3 ~/Documents
 ```
@@ -101,15 +105,14 @@ tree
 └── tree.zig
 ```
 
-
 ## Differences from Standard Tree
 
 - Optimized for macOS
 - Custom sorting algorithm prioritizing:
-  1. Hidden files (when shown)
-  2. Uppercase items
-  3. Directories
-  4. Alphanumeric order
+    1. Hidden files (when shown)
+    2. Uppercase items
+    3. Directories
+    4. Alphanumeric order
 
 ## License
 
