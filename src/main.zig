@@ -36,6 +36,7 @@ const FileEntry = struct {
 const TreeOptions = struct {
     show_hidden: bool = false,
     max_depth: ?usize = null,
+    should_ignore_git_ignored: bool = false,
 };
 
 fn isUpper(name: []const u8) bool {
@@ -62,17 +63,109 @@ fn compareFileEntries(context: void, a: FileEntry, b: FileEntry) bool {
     return std.ascii.lessThanIgnoreCase(a.name, b.name);
 }
 
+fn checkGitIgnoreBatch(allocator: Allocator, dir_path: []const u8, names: []const []const u8) !std.StringHashMap(void) {
+    var ignored_set = std.StringHashMap(void).init(allocator);
+    errdefer ignored_set.deinit();
+
+    // Prepare arguments for git check-ignore
+    // We want: git check-ignore --stdin
+    const argv_run = &[_][]const u8{ "git", "check-ignore", "--stdin" };
+
+    var child = std.process.Child.init(argv_run, allocator);
+    child.cwd = dir_path;
+    child.stdin_behavior = .Pipe;
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Ignore; // Ignore errors (like not a git repo)
+
+    try child.spawn();
+
+    // Write names to stdin
+    {
+        const stdin = child.stdin.?;
+        for (names) |name| {
+            try stdin.writeAll(name);
+            try stdin.writeAll("\n");
+        }
+        stdin.close();
+    }
+    // Close stdin to signal end of input
+    child.stdin = null;
+
+    // Read stdout
+    var buf: [4096]u8 = undefined;
+    var start: usize = 0;
+    const stdout = child.stdout.?;
+
+    while (true) {
+        const bytes_read = try stdout.read(buf[start..]);
+        if (bytes_read == 0) break;
+
+        const end = start + bytes_read;
+        var slice = buf[0..end];
+        
+        while (mem.indexOfScalar(u8, slice, '\n')) |newline_idx| {
+            const line = slice[0..newline_idx];
+            try ignored_set.put(try allocator.dupe(u8, line), {});
+            
+            // Move remaining
+            const remaining = slice[newline_idx + 1..];
+            mem.copyForwards(u8, buf[0..remaining.len], remaining);
+            slice = buf[0..remaining.len];
+        }
+        start = slice.len;
+    }
+
+    _ = try child.wait();
+
+    return ignored_set;
+}
+
 fn getSortedEntries(allocator: Allocator, path: []const u8, options: TreeOptions) !std.ArrayList(FileEntry) {
     var dir = try fs.openDirAbsolute(path, .{ .iterate = true });
     defer dir.close();
 
-    var entries = std.ArrayList(FileEntry){};
+    var all_names = std.ArrayList([]const u8){};
+    defer {
+        for (all_names.items) |name| {
+            allocator.free(name);
+        }
+        all_names.deinit(allocator);
+    }
+
     var iter = dir.iterate();
     while (try iter.next()) |entry| {
         if (!options.show_hidden and entry.name[0] == '.') {
             continue;
         }
-        const file_entry = try FileEntry.create(allocator, path, entry.name);
+        try all_names.append(allocator, try allocator.dupe(u8, entry.name));
+    }
+
+    var ignored_set: ?std.StringHashMap(void) = null;
+    if (options.should_ignore_git_ignored) {
+        // We attempt to check git ignore. If it fails (e.g. not a git repo), we just proceed with empty set.
+        ignored_set = checkGitIgnoreBatch(allocator, path, all_names.items) catch null;
+    }
+    defer if (ignored_set) |*set| {
+        var key_iter = set.keyIterator();
+        while (key_iter.next()) |key| {
+            allocator.free(key.*);
+        }
+        set.deinit();
+    };
+
+    var entries = std.ArrayList(FileEntry){};
+    errdefer {
+        for (entries.items) |*e| e.deinit(allocator);
+        entries.deinit(allocator);
+    }
+
+    for (all_names.items) |name| {
+        if (ignored_set) |set| {
+            if (set.contains(name)) {
+                continue;
+            }
+        }
+        const file_entry = try FileEntry.create(allocator, path, name);
         try entries.append(allocator, file_entry);
     }
 
@@ -134,6 +227,70 @@ fn printTree(
     try printTreeRecursive(allocator, entries.items, prefix, options, depth, writer);
 }
 
+const ParseResult = struct {
+    options: TreeOptions,
+    target_path: []const u8,
+};
+
+fn parseArgs(args: []const []const u8) !ParseResult {
+    var options = TreeOptions{};
+    var target_path: []const u8 = ".";
+
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (mem.eql(u8, arg, "--all")) {
+            options.show_hidden = true;
+        } else if (mem.eql(u8, arg, "--max-depth")) {
+            i += 1;
+            if (i < args.len) {
+                options.max_depth = try std.fmt.parseInt(usize, args[i], 10);
+            } else {
+                std.debug.print("Missing argument for max depth\n", .{});
+                return error.InvalidArgument;
+            }
+        } else if (mem.eql(u8, arg, "--gitignore")) {
+            options.should_ignore_git_ignored = true;
+        } else if (mem.startsWith(u8, arg, "-")) {
+            // Handle short flags and combined flags
+            // Special case for -L which takes an argument
+            if (mem.eql(u8, arg, "-L")) {
+                i += 1;
+                if (i < args.len) {
+                    options.max_depth = try std.fmt.parseInt(usize, args[i], 10);
+                } else {
+                    std.debug.print("Missing argument for max depth\n", .{});
+                    return error.InvalidArgument;
+                }
+                continue;
+            }
+
+            // Iterate over characters for combined flags
+            for (arg[1..]) |c| {
+                switch (c) {
+                    'a' => options.show_hidden = true,
+                    'g' => options.should_ignore_git_ignored = true,
+                    else => {
+                        // Unknown flag, treat as path if it looks like one? 
+                        // Or just ignore/error? 
+                        // Standard behavior is usually error for unknown flag.
+                        // But for now let's just ignore unknown chars in combined flags 
+                        // or maybe print warning?
+                        // Let's stick to simple: if it's not a known flag char, it's ignored.
+                    },
+                }
+            }
+        } else {
+            target_path = arg;
+        }
+    }
+
+    return ParseResult{
+        .options = options,
+        .target_path = target_path,
+    };
+}
+
 /// Main function of the tree application.
 pub fn main() anyerror!void {
     var gpa = std.heap.DebugAllocator(.{}){};
@@ -143,27 +300,9 @@ pub fn main() anyerror!void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
-    var options = TreeOptions{};
-    var target_path: []const u8 = "."; // Default to current directory
-
-    // argument parsing
-    var i: usize = 1;
-    while (i < args.len) : (i += 1) {
-        const arg = args[i];
-        if (mem.eql(u8, arg, "-a") or mem.eql(u8, arg, "--all")) {
-            options.show_hidden = true;
-        } else if (mem.eql(u8, arg, "-L") or mem.eql(u8, arg, "--max-depth")) {
-            i += 1;
-            if (i < args.len) {
-                options.max_depth = try std.fmt.parseInt(usize, args[i], 10);
-            } else {
-                std.debug.print("Missing argument for max depth\n", .{});
-                return error.InvalidArgument;
-            }
-        } else if (!mem.startsWith(u8, arg, "-")) {
-            target_path = arg;
-        }
-    }
+    const parse_result = try parseArgs(args);
+    const options = parse_result.options;
+    const target_path = parse_result.target_path;
 
     // Get absolute path
     var abs_path_buf: [fs.max_path_bytes]u8 = undefined;
@@ -329,6 +468,75 @@ test "TreeOptions default values" {
     // Check default values
     try testing.expect(!options.show_hidden);
     try testing.expect(options.max_depth == null);
+    try testing.expect(!options.should_ignore_git_ignored);
+}
+
+test "should_ignore_git_ignored flag" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    // Create a temporary directory for testing
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Get path to the temporary directory
+    const path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(path);
+
+    // Initialize git repo
+    const argv_init = &[_][]const u8{ "git", "init" };
+    var child_init = std.process.Child.init(argv_init, allocator);
+    child_init.cwd = path;
+    child_init.stdin_behavior = .Ignore;
+    child_init.stdout_behavior = .Ignore;
+    child_init.stderr_behavior = .Ignore;
+    _ = try child_init.spawnAndWait();
+
+    // Create .gitignore
+    {
+        var file = try tmp_dir.dir.createFile(".gitignore", .{});
+        try file.writeAll("ignored.txt\n");
+        file.close();
+    }
+
+    // Create ignored file
+    {
+        var file = try tmp_dir.dir.createFile("ignored.txt", .{});
+        file.close();
+    }
+
+    // Create visible file
+    {
+        var file = try tmp_dir.dir.createFile("visible.txt", .{});
+        file.close();
+    }
+
+    // Test with should_ignore_git_ignored = true
+    const options = TreeOptions{ .should_ignore_git_ignored = true, .show_hidden = true };
+    var entries = try getSortedEntries(allocator, path, options);
+    defer {
+        for (entries.items) |*entry| {
+            entry.deinit(allocator);
+        }
+        entries.deinit(allocator);
+    }
+
+    // Verify results
+    try testing.expectEqual(@as(usize, 3), entries.items.len); // .git, .gitignore and visible.txt
+    
+    var found_visible = false;
+    var found_ignored = false;
+    var found_git = false;
+    
+    for (entries.items) |entry| {
+        if (mem.eql(u8, entry.name, "visible.txt")) found_visible = true;
+        if (mem.eql(u8, entry.name, "ignored.txt")) found_ignored = true;
+        if (mem.eql(u8, entry.name, ".git")) found_git = true;
+    }
+
+    try testing.expect(found_visible);
+    try testing.expect(!found_ignored);
+    try testing.expect(found_git);
 }
 
 test "Directory traversal with printTree" {
@@ -385,9 +593,39 @@ test "Directory traversal with printTree" {
 }
 
 // Test to run the entire program with mock arguments
-test "main function argument parsing" {
-    // To properly test main, you would need to mock process.args
-    // This is a more advanced test that might require modifications
-    // to your code to make it testable
-    // For now, we'll just note that this would be valuable to test
+test "parseArgs combined flags" {
+    const testing = std.testing;
+
+    // Test -ag
+    {
+        const args = &[_][]const u8{ "tree", "-ag" };
+        const result = try parseArgs(args);
+        try testing.expect(result.options.show_hidden);
+        try testing.expect(result.options.should_ignore_git_ignored);
+    }
+
+    // Test -ga
+    {
+        const args = &[_][]const u8{ "tree", "-ga" };
+        const result = try parseArgs(args);
+        try testing.expect(result.options.show_hidden);
+        try testing.expect(result.options.should_ignore_git_ignored);
+    }
+
+    // Test separate flags
+    {
+        const args = &[_][]const u8{ "tree", "-a", "-g" };
+        const result = try parseArgs(args);
+        try testing.expect(result.options.show_hidden);
+        try testing.expect(result.options.should_ignore_git_ignored);
+    }
+
+    // Test mixed with path
+    {
+        const args = &[_][]const u8{ "tree", "-ag", "src" };
+        const result = try parseArgs(args);
+        try testing.expect(result.options.show_hidden);
+        try testing.expect(result.options.should_ignore_git_ignored);
+        try testing.expectEqualStrings("src", result.target_path);
+    }
 }
