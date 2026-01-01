@@ -20,12 +20,11 @@ pub fn parseArgs(args: []const []const u8) anyerror!ParseResult {
         if (mem.eql(u8, arg, "--all")) {
             options.show_hidden = true;
         } else if (mem.eql(u8, arg, "--max-depth")) {
-            i += 1;
-            if (i < args.len) {
-                options.max_depth = try std.fmt.parseInt(usize, args[i], 10);
-            } else {
-                std.debug.print("Missing argument for max depth\n", .{});
-                return error.InvalidArgument;
+            if (i + 1 < args.len) {
+                if (std.fmt.parseInt(usize, args[i + 1], 10) catch null) |val| {
+                    options.max_depth = val;
+                    i += 1;
+                }
             }
         } else if (mem.eql(u8, arg, "--gitignore")) {
             options.should_ignore_git_ignored = true;
@@ -33,12 +32,11 @@ pub fn parseArgs(args: []const []const u8) anyerror!ParseResult {
             // Handle short flags and combined flags
             // Special case for -L which takes an argument
             if (mem.eql(u8, arg, "-L")) {
-                i += 1;
-                if (i < args.len) {
-                    options.max_depth = try std.fmt.parseInt(usize, args[i], 10);
-                } else {
-                    std.debug.print("Missing argument for max depth\n", .{});
-                    return error.InvalidArgument;
+                if (i + 1 < args.len) {
+                    if (std.fmt.parseInt(usize, args[i + 1], 10) catch null) |val| {
+                        options.max_depth = val;
+                        i += 1;
+                    }
                 }
                 continue;
             }
@@ -103,5 +101,96 @@ test "parseArgs combined flags" {
         try testing.expect(result.options.show_hidden);
         try testing.expect(result.options.should_ignore_git_ignored);
         try testing.expectEqualStrings("src", result.target_path);
+    }
+}
+
+test "parseArgs long flags" {
+    const testing = std.testing;
+
+    // Test --all
+    {
+        const args = &[_][]const u8{ "tree", "--all" };
+        const result = try parseArgs(args);
+        try testing.expect(result.options.show_hidden);
+    }
+
+    // Test --gitignore
+    {
+        const args = &[_][]const u8{ "tree", "--gitignore" };
+        const result = try parseArgs(args);
+        try testing.expect(result.options.should_ignore_git_ignored);
+    }
+}
+
+test "parseArgs max-depth" {
+    const testing = std.testing;
+
+    // Test --max-depth with value
+    {
+        const args = &[_][]const u8{ "tree", "--max-depth", "5" };
+        const result = try parseArgs(args);
+        try testing.expectEqual(@as(?usize, 5), result.options.max_depth);
+    }
+
+    // Test -L with value
+    {
+        const args = &[_][]const u8{ "tree", "-L", "3" };
+        const result = try parseArgs(args);
+        try testing.expectEqual(@as(?usize, 3), result.options.max_depth);
+    }
+
+    // Test --max-depth without value (trailing)
+    {
+        const args = &[_][]const u8{ "tree", "--max-depth" };
+        const result = try parseArgs(args);
+        try testing.expectEqual(@as(?usize, null), result.options.max_depth);
+    }
+
+    // Test -L without value (trailing)
+    {
+        const args = &[_][]const u8{ "tree", "-L" };
+        const result = try parseArgs(args);
+        try testing.expectEqual(@as(?usize, null), result.options.max_depth);
+    }
+
+    // Test --max-depth with non-integer value (should be treated as path)
+    {
+        const args = &[_][]const u8{ "tree", "--max-depth", "src" };
+        const result = try parseArgs(args);
+        try testing.expectEqual(@as(?usize, null), result.options.max_depth);
+        try testing.expectEqualStrings("src", result.target_path);
+    }
+
+    // Default (null/unlimited)
+    {
+        const args = &[_][]const u8{"tree"};
+        const result = try parseArgs(args);
+        try testing.expect(result.options.max_depth == null);
+    }
+}
+
+test "parseArgs defaults and paths" {
+    const testing = std.testing;
+
+    // No args
+    {
+        const args = &[_][]const u8{"tree"};
+        const result = try parseArgs(args);
+        try testing.expect(!result.options.show_hidden);
+        try testing.expectEqualStrings(".", result.target_path);
+    }
+
+    // Multiple paths (last one wins)
+    {
+        const args = &[_][]const u8{ "tree", "dir1", "dir2" };
+        const result = try parseArgs(args);
+        try testing.expectEqualStrings("dir2", result.target_path);
+    }
+
+    // Unknown short flag (ignored)
+    {
+        const args = &[_][]const u8{ "tree", "-z" };
+        const result = try parseArgs(args);
+        try testing.expect(!result.options.show_hidden);
     }
 }

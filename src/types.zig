@@ -3,8 +3,8 @@ const Allocator = std.mem.Allocator;
 
 /// Options for the tree command.
 pub const TreeOptions = struct {
-    show_hidden: bool = false,
     max_depth: ?usize = null,
+    show_hidden: bool = false,
     should_ignore_git_ignored: bool = false,
 };
 
@@ -18,10 +18,11 @@ pub const FileEntry = struct {
     /// Creates a new FileEntry.
     pub fn create(allocator: Allocator, dir_path: []const u8, name: []const u8) anyerror!FileEntry {
         const path = try std.fs.path.join(allocator, &[_][]const u8{ dir_path, name });
+        errdefer allocator.free(path);
         const is_hidden = name.len > 0 and name[0] == '.';
 
         var stat_buf: std.fs.File.Stat = undefined;
-        var dir = try std.fs.openDirAbsolute(dir_path, .{});
+        var dir = try std.fs.cwd().openDir(dir_path, .{});
         defer dir.close();
 
         stat_buf = try dir.statFile(name);

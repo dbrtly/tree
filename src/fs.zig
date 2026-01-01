@@ -36,7 +36,7 @@ pub fn compareFileEntries(context: void, a: FileEntry, b: FileEntry) bool {
 
 /// Retrieves and sorts entries in a directory.
 pub fn getSortedEntries(allocator: Allocator, path: []const u8, options: TreeOptions) !std.ArrayList(FileEntry) {
-    var dir = try fs.openDirAbsolute(path, .{ .iterate = true });
+    var dir = try fs.cwd().openDir(path, .{ .iterate = true });
     defer dir.close();
 
     var all_names = std.ArrayList([]const u8){};
@@ -52,7 +52,11 @@ pub fn getSortedEntries(allocator: Allocator, path: []const u8, options: TreeOpt
         if (!options.show_hidden and entry.name[0] == '.') {
             continue;
         }
-        try all_names.append(allocator, try allocator.dupe(u8, entry.name));
+        const name_dupe = try allocator.dupe(u8, entry.name);
+        all_names.append(allocator, name_dupe) catch |err| {
+            allocator.free(name_dupe);
+            return err;
+        };
     }
 
     var ignored_set: ?std.StringHashMap(void) = null;
@@ -75,13 +79,21 @@ pub fn getSortedEntries(allocator: Allocator, path: []const u8, options: TreeOpt
     }
 
     for (all_names.items) |name| {
+        var ignored = false;
         if (ignored_set) |set| {
             if (set.contains(name)) {
-                continue;
+                ignored = true;
             }
         }
+        if (ignored) {
+            continue;
+        }
         const file_entry = try FileEntry.create(allocator, path, name);
-        try entries.append(allocator, file_entry);
+        entries.append(allocator, file_entry) catch |err| {
+            var mutable_entry = file_entry;
+            mutable_entry.deinit(allocator);
+            return err;
+        };
     }
 
     std.sort.insertion(FileEntry, entries.items, {}, compareFileEntries);
@@ -235,4 +247,111 @@ test "should_ignore_git_ignored flag" {
     try testing.expect(found_visible);
     try testing.expect(!found_ignored);
     try testing.expect(found_git);
+}
+
+test "isUpper with empty string" {
+    const testing = std.testing;
+    // This covers the name.len == 0 check in isUpper
+    const entry = FileEntry{
+        .name = "",
+        .path = "",
+        .is_dir = false,
+        .is_hidden = false,
+    };
+    // compareFileEntries calls isUpper
+    try testing.expect(!compareFileEntries({}, entry, entry));
+}
+
+test "getSortedEntries git failure" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(path);
+
+    // Create a file
+    {
+        var file = try tmp_dir.dir.createFile("test.txt", .{});
+        defer file.close();
+        try file.writeAll("hello");
+    }
+
+    // To force a git failure even if we are inside another git repo,
+    // we can create a dummy .git FILE (not directory).
+    try tmp_dir.dir.writeFile(.{ .sub_path = ".git", .data = "not a directory" });
+
+    // Test with should_ignore_git_ignored = true in a non-git directory
+    // This should hit the 'catch null' branch in getSortedEntries
+    const options = TreeOptions{ .should_ignore_git_ignored = true };
+    var entries = try getSortedEntries(allocator, path, options);
+    defer {
+        for (entries.items) |*entry| entry.deinit(allocator);
+        entries.deinit(allocator);
+    }
+
+    try testing.expectEqual(@as(usize, 1), entries.items.len);
+    try testing.expectEqualStrings("test.txt", entries.items[0].name);
+}
+
+test "getSortedEntries hidden files" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(path);
+
+    try tmp_dir.dir.writeFile(.{ .sub_path = ".hidden", .data = "" });
+    try tmp_dir.dir.writeFile(.{ .sub_path = "visible", .data = "" });
+
+    // Test with show_hidden = false
+    {
+        const options = TreeOptions{ .show_hidden = false };
+        var entries = try getSortedEntries(allocator, path, options);
+        defer {
+            for (entries.items) |*entry| entry.deinit(allocator);
+            entries.deinit(allocator);
+        }
+        try testing.expectEqual(@as(usize, 1), entries.items.len);
+        try testing.expectEqualStrings("visible", entries.items[0].name);
+    }
+
+    // Test with show_hidden = true
+    {
+        const options = TreeOptions{ .show_hidden = true };
+        var entries = try getSortedEntries(allocator, path, options);
+        defer {
+            for (entries.items) |*entry| entry.deinit(allocator);
+            entries.deinit(allocator);
+        }
+        try testing.expectEqual(@as(usize, 2), entries.items.len);
+    }
+}
+
+fn getSortedEntriesWrapper(allocator: Allocator, path: []const u8, options: TreeOptions) !void {
+    var entries = try getSortedEntries(allocator, path, options);
+    for (entries.items) |*e| e.deinit(allocator);
+    entries.deinit(allocator);
+}
+
+test "getSortedEntries allocation failures" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(path);
+
+    try tmp_dir.dir.writeFile(.{ .sub_path = "file1.txt", .data = "" });
+
+    const options = TreeOptions{};
+
+    try testing.checkAllAllocationFailures(allocator, getSortedEntriesWrapper, .{ path, options });
 }

@@ -98,20 +98,68 @@ test "Directory traversal with printTree" {
     // We're going to do a minimal test to ensure it doesn't crash
     // A more thorough test would redirect stdout and verify output
     const options = TreeOptions{};
-    var alloc_writer = std.io.Writer.Allocating.init(allocator);
-    defer alloc_writer.deinit();
+    var list = std.ArrayList(u8){};
+    defer list.deinit(allocator);
 
-    try printTree(allocator, path, "", options, 0, &alloc_writer.writer);
+    try printTree(allocator, path, "", options, 0, list.writer(allocator));
 
     // Test with show_hidden = true
-    alloc_writer.deinit();
-    alloc_writer = std.io.Writer.Allocating.init(allocator);
+    list.clearRetainingCapacity();
     const options_hidden = TreeOptions{ .show_hidden = true };
-    try printTree(allocator, path, "", options_hidden, 0, &alloc_writer.writer);
+    try printTree(allocator, path, "", options_hidden, 0, list.writer(allocator));
+}
 
-    // Test with max_depth = 0 (should only show the root)
-    alloc_writer.deinit();
-    alloc_writer = std.io.Writer.Allocating.init(allocator);
-    const options_depth = TreeOptions{ .max_depth = 0 };
-    try printTree(allocator, path, "", options_depth, 0, &alloc_writer.writer);
+test "printTree max-depth" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(path);
+
+    // Create a deeply nested structure: dir1/dir2/dir3/file.txt
+    try tmp_dir.dir.makePath("dir1/dir2/dir3");
+    {
+        var file = try tmp_dir.dir.createFile("dir1/dir2/dir3/file.txt", .{});
+        file.close();
+    }
+
+    var list = std.ArrayList(u8){};
+    defer list.deinit(allocator);
+
+    // Test with max_depth = 0 (should only show the root level entries, but wait, printTreeRecursive checks depth > max_depth)
+    // If depth is 0 and max_depth is 0, it prints. If depth is 1, it returns.
+    {
+        list.clearRetainingCapacity();
+        const options_depth = TreeOptions{ .max_depth = 0 };
+        try printTree(allocator, path, "", options_depth, 0, list.writer(allocator));
+        const output = list.items;
+        try testing.expect(std.mem.indexOf(u8, output, "dir1") != null);
+        try testing.expect(std.mem.indexOf(u8, output, "dir2") == null);
+    }
+
+    // Test with max_depth = 1
+    {
+        list.clearRetainingCapacity();
+        const options_depth = TreeOptions{ .max_depth = 1 };
+        try printTree(allocator, path, "", options_depth, 0, list.writer(allocator));
+        const output = list.items;
+        try testing.expect(std.mem.indexOf(u8, output, "dir1") != null);
+        try testing.expect(std.mem.indexOf(u8, output, "dir2") != null);
+        try testing.expect(std.mem.indexOf(u8, output, "dir3") == null);
+    }
+
+    // Test with unlimited depth (max_depth = null)
+    {
+        list.clearRetainingCapacity();
+        const options = TreeOptions{};
+        try printTree(allocator, path, "", options, 0, list.writer(allocator));
+        const output = list.items;
+        try testing.expect(std.mem.indexOf(u8, output, "dir1") != null);
+        try testing.expect(std.mem.indexOf(u8, output, "dir2") != null);
+        try testing.expect(std.mem.indexOf(u8, output, "dir3") != null);
+        try testing.expect(std.mem.indexOf(u8, output, "file.txt") != null);
+    }
 }
