@@ -6,11 +6,18 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const lib_mod = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
+    exe_mod.addImport("tree_lib", lib_mod);
 
     const exe = b.addExecutable(.{
         .name = "tree",
@@ -30,7 +37,7 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     const unit_tests = b.addTest(.{
-        .root_module = exe_mod,
+        .root_module = lib_mod,
     });
 
     const run_artifact_tests = b.addRunArtifact(unit_tests);
