@@ -1,5 +1,7 @@
 const std = @import("std");
+const zlinter = @import("zlinter");
 
+/// Build function for the tree project.
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -35,4 +37,28 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_artifact_tests.step);
+
+    const lint_step = b.step("lint", "Lint source code");
+    lint_step.dependOn(step: {
+        var builder = zlinter.builder(b, .{});
+        inline for (@typeInfo(zlinter.BuiltinLintRule).@"enum".fields) |f| {
+            builder.addRule(.{ .builtin = @enumFromInt(f.value) }, .{});
+        }
+        break :step builder.build();
+    });
+
+    const fmt_step = b.step("fmt", "Run zig fmt");
+    const fmt = b.addFmt(.{
+        .paths = &.{ "src", "build.zig", "build.zig.zon", "inspect_build.zig" },
+    });
+    fmt_step.dependOn(&fmt.step);
+
+    const style_step = b.step("style", "Check for style compliance (lint and fmt)");
+    style_step.dependOn(lint_step);
+    style_step.dependOn(fmt_step);
+
+    const ci_step = b.step("ci", "Continuous integration (lint and fmt then test)");
+    const ci_tests = b.addRunArtifact(unit_tests);
+    ci_tests.step.dependOn(style_step);
+    ci_step.dependOn(&ci_tests.step);
 }

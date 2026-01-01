@@ -31,7 +31,19 @@ cd tree
 # Build the executable
 zig build
 
-# test the code
+# format code
+zig build fmt
+
+# lint code
+zig build lint
+
+# format and lint code
+zig build style
+
+# test all code
+zig build test
+
+# test the code of one module
 zig test tree.zig
 
 # Optional: Move to a directory in your PATH
