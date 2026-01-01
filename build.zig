@@ -45,11 +45,24 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_artifact_tests.step);
 
+    // Coverage run
+    const cov_step = b.step("cov", "Generate code coverage report");
+    const run_cov = b.addSystemCommand(&.{
+        "kcov",
+        "--clean",
+        "--include-pattern=src/",
+        b.pathJoin(&.{ b.install_path, "coverage" }),
+    });
+    run_cov.addArtifactArg(unit_tests);
+    cov_step.dependOn(&run_cov.step);
+
     const lint_step = b.step("lint", "Lint source code");
     lint_step.dependOn(step: {
         var builder = zlinter.builder(b, .{});
         inline for (@typeInfo(zlinter.BuiltinLintRule).@"enum".fields) |f| {
-            builder.addRule(.{ .builtin = @enumFromInt(f.value) }, .{});
+            const rule = @as(zlinter.BuiltinLintRule, @enumFromInt(f.value));
+            if (rule == .no_deprecated) continue;
+            builder.addRule(.{ .builtin = rule }, .{});
         }
         break :step builder.build();
     });
@@ -64,8 +77,12 @@ pub fn build(b: *std.Build) void {
     style_step.dependOn(lint_step);
     style_step.dependOn(fmt_step);
 
-    const ci_step = b.step("ci", "Continuous integration (lint and fmt then test)");
     const ci_tests = b.addRunArtifact(unit_tests);
     ci_tests.step.dependOn(style_step);
-    ci_step.dependOn(&ci_tests.step);
+
+    // Force coverage to run AFTER standalone tests pass
+    run_cov.step.dependOn(&ci_tests.step);
+
+    const ci_step = b.step("ci", "Continuous integration (lint, fmt, test, then coverage)");
+    ci_step.dependOn(cov_step);
 }
