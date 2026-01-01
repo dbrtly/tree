@@ -134,8 +134,9 @@ fn printTree(
     try printTreeRecursive(allocator, entries.items, prefix, options, depth, writer);
 }
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+/// Main function of the tree application.
+pub fn main() anyerror!void {
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -365,21 +366,22 @@ test "Directory traversal with printTree" {
     // We're going to do a minimal test to ensure it doesn't crash
     // A more thorough test would redirect stdout and verify output
     const options = TreeOptions{};
-    var list = std.ArrayList(u8){};
-    defer list.deinit(allocator);
-    const writer = list.writer(allocator);
+    var alloc_writer = std.io.Writer.Allocating.init(allocator);
+    defer alloc_writer.deinit();
 
-    try printTree(allocator, path, "", options, 0, writer);
+    try printTree(allocator, path, "", options, 0, &alloc_writer.writer);
 
     // Test with show_hidden = true
-    list.clearRetainingCapacity();
+    alloc_writer.deinit();
+    alloc_writer = std.io.Writer.Allocating.init(allocator);
     const options_hidden = TreeOptions{ .show_hidden = true };
-    try printTree(allocator, path, "", options_hidden, 0, writer);
+    try printTree(allocator, path, "", options_hidden, 0, &alloc_writer.writer);
 
     // Test with max_depth = 0 (should only show the root)
-    list.clearRetainingCapacity();
+    alloc_writer.deinit();
+    alloc_writer = std.io.Writer.Allocating.init(allocator);
     const options_depth = TreeOptions{ .max_depth = 0 };
-    try printTree(allocator, path, "", options_depth, 0, writer);
+    try printTree(allocator, path, "", options_depth, 0, &alloc_writer.writer);
 }
 
 // Test to run the entire program with mock arguments
